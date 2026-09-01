@@ -25,6 +25,9 @@ struct NewDiaryView: View {
     @State private var showLiveDraftPreview = false
     // 상시 마이크 모드 (항상 켜짐)
     
+    // Date selection variable (constrained to past 1 month ~ today)
+    @State private var selectedDate: Date = Date()
+    
     // Photo attachment variables
     @State private var attachedImages: [NSImage] = []
     @State private var selectedPreviewImage: NSImage? = nil
@@ -81,6 +84,11 @@ struct NewDiaryView: View {
             stepIndicator
                 .padding(.vertical, 12)
                 .background(Color(NSColor.controlBackgroundColor))
+            
+            Divider()
+            
+            // Date Selector Bar (최근 1개월 범위 제한)
+            dateSelectorBar
             
             Divider()
             
@@ -156,6 +164,11 @@ struct NewDiaryView: View {
         })) { item in
             ImageViewerModal(image: item.image) {
                 selectedPreviewImage = nil
+            }
+        }
+        .onChange(of: selectedDate) { _ in
+            if chatHistory.isEmpty && step == .chatting {
+                startInitialConversation()
             }
         }
         .onAppear {
@@ -609,6 +622,14 @@ struct NewDiaryView: View {
                         .font(.system(size: 64))
                         .shadow(radius: 4)
                     
+                    HStack(spacing: 6) {
+                        Image(systemName: "calendar")
+                            .foregroundColor(.secondary)
+                        Text(formatSelectedDate(selectedDate))
+                            .font(.subheadline.bold())
+                            .foregroundColor(.secondary)
+                    }
+                    
                     TextField("일기 제목", text: $diaryTitle)
                         .font(.title2.bold())
                         .multilineTextAlignment(.center)
@@ -810,7 +831,15 @@ struct NewDiaryView: View {
     
     // Start Initial Conversation with AI greeting
     private func startInitialConversation() {
-        let question = llmService.getInitialQuestion()
+        let question: String
+        if Calendar.current.isDateInToday(selectedDate) {
+            question = llmService.getInitialQuestion()
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "M월 d일"
+            let dateStr = formatter.string(from: selectedDate)
+            question = "안녕하세요! \(dateStr)에는 어떤 특별한 일이나 기억에 남는 순간이 있었나요? 편하게 들려주세요."
+        }
         self.currentQuestion = question
         if ttsService.autoReadAIResponse {
             ttsService.speak(text: question)
@@ -950,7 +979,8 @@ struct NewDiaryView: View {
                     
                     let formatter = DateFormatter()
                     formatter.dateFormat = "MM월 dd일 "
-                    self.diaryTitle = formatter.string(from: Date()) + (result.keywords.first ?? "오늘") + " 일기"
+                    let dateLabel = Calendar.current.isDateInToday(selectedDate) ? "오늘" : formatter.string(from: selectedDate)
+                    self.diaryTitle = formatter.string(from: selectedDate) + (result.keywords.first ?? dateLabel) + " 일기"
                     
                     self.step = .preview
                 }
@@ -973,7 +1003,7 @@ struct NewDiaryView: View {
         }
         
         let entry = DiaryEntry(
-            date: Date(),
+            date: selectedDate,
             title: diaryTitle,
             content: finalContent,
             voiceDraft: liveDraft.isEmpty ? nil : liveDraft,
@@ -985,6 +1015,71 @@ struct NewDiaryView: View {
         )
         diaryStore.add(entry)
         dismiss()
+    }
+    
+    // MARK: - Date Range & Selector Helpers
+    
+    /// 오늘 기준 과거 1개월(30일)부터 오늘 자정까지의 날짜 범위
+    private var allowedDateRange: ClosedRange<Date> {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let endOfToday = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: today) ?? Date()
+        let oneMonthAgo = calendar.date(byAdding: .month, value: -1, to: today) ?? calendar.date(byAdding: .day, value: -30, to: today)!
+        return oneMonthAgo...endOfToday
+    }
+    
+    private func formatSelectedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy년 MM월 dd일 (E)"
+        formatter.locale = Locale(identifier: "ko_KR")
+        return formatter.string(from: date)
+    }
+    
+    private var dateSelectorBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "calendar")
+                .foregroundColor(.accentColor)
+            Text("일기 날짜:")
+                .font(.subheadline.bold())
+                .foregroundColor(.secondary)
+            
+            DatePicker(
+                "일기 날짜 선택",
+                selection: $selectedDate,
+                in: allowedDateRange,
+                displayedComponents: [.date]
+            )
+            .labelsHidden()
+            .datePickerStyle(.compact)
+            
+            if Calendar.current.isDateInToday(selectedDate) {
+                Text("오늘")
+                    .font(.caption.bold())
+                    .foregroundColor(.accentColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.12))
+                    .cornerRadius(6)
+            } else {
+                let daysAgo = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: selectedDate), to: Calendar.current.startOfDay(for: Date())).day ?? 0
+                Text(daysAgo == 1 ? "어제" : "\(daysAgo)일 전")
+                    .font(.caption.bold())
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.orange.opacity(0.12))
+                    .cornerRadius(6)
+            }
+            
+            Spacer()
+            
+            Text("최근 1개월 이내 날짜만 작성 가능")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
     }
     
     // Drag & Drop Handler
