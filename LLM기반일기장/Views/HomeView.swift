@@ -9,6 +9,7 @@ struct HomeView: View {
     
     @State private var isShowingWriter = false
     @State private var selectedEntry: DiaryEntry? = nil
+    @State private var selectedDetailImage: NSImage? = nil
     
     var body: some View {
         HStack(spacing: 0) {
@@ -180,6 +181,45 @@ struct HomeView: View {
                         
                         Divider()
                         
+                        // Attached Photos Gallery
+                        if !entry.images.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Image(systemName: "photo.stack.fill")
+                                        .foregroundColor(.accentColor)
+                                    Text("첨부된 사진 (\(entry.images.count)장)")
+                                        .font(.headline)
+                                        .foregroundColor(.secondary)
+                                }
+                                
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 12) {
+                                        ForEach(entry.images, id: \.self) { filename in
+                                            if let image = ImageFileManager.shared.loadImage(filename: filename) {
+                                                Image(nsImage: image)
+                                                    .resizable()
+                                                    .aspectRatio(contentMode: .fill)
+                                                    .frame(width: 140, height: 100)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: 12)
+                                                            .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                                                    )
+                                                    .shadow(color: Color.black.opacity(0.08), radius: 4, x: 0, y: 2)
+                                                    .onTapGesture {
+                                                        selectedDetailImage = image
+                                                    }
+                                                    .help("클릭하여 사진 확대")
+                                            }
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                }
+                            }
+                            
+                            Divider()
+                        }
+                        
                         // Main content
                         VStack(alignment: .leading, spacing: 8) {
                             Text("일기 본문")
@@ -236,53 +276,95 @@ struct HomeView: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                // Empty Details: Show tag dashboard + Average mental graph
-                VStack(spacing: 24) {
-                    Spacer()
-                    
-                    VStack(spacing: 8) {
-                        Text("📊 일정 기간 동안의 평균 정신감정 그래프")
-                            .font(.headline)
-                        
-                        Text(selectedPeriodDescription)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    RadarChartView(scores: averageScores, size: 240)
-                        .padding()
-                        .background(Color.secondary.opacity(0.04))
-                        .cornerRadius(20)
-                    
-                    Divider()
-                        .padding(.horizontal, 40)
-                    
-                    // Tag Dashboard Cloud
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("인기 키워드로 일기 찾기")
-                            .font(.subheadline.bold())
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal)
-                        
-                        FlowLayout(items: allKeywords) { tag in
-                            Button(action: {
-                                selectedKeyword = tag
-                            }) {
-                                Text("#\(tag)")
-                                    .font(.subheadline)
-                                    .foregroundColor(selectedKeyword == tag ? .white : .accentColor)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(selectedKeyword == tag ? Color.accentColor : Color.accentColor.opacity(0.1))
-                                    .cornerRadius(12)
-                            }
-                            .buttonStyle(.plain)
+                // Empty Details: Show summary chart + trend widget
+                ScrollView {
+                    VStack(spacing: 24) {
+                        // 종합 레이더 차트
+                        VStack(spacing: 8) {
+                            Text("📊 기간별 평균 감정 그래프")
+                                .font(.headline)
+                            Text(selectedPeriodDescription)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
                         }
-                        .padding(.horizontal)
+
+                        RadarChartView(scores: averageScores, size: 200)
+                            .padding()
+                            .background(Color.secondary.opacity(0.04))
+                            .cornerRadius(20)
+
+                        Divider().padding(.horizontal, 40)
+
+                        // 미니 무드 트렌드 차트
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label("종합 무드 트렌드", systemImage: "chart.line.uptrend.xyaxis")
+                                    .font(.subheadline.bold())
+                                Spacer()
+                                if let latest = homeMoodPoints.last {
+                                    HStack(spacing: 4) {
+                                        Circle()
+                                            .fill(homeMoodColor(latest.value))
+                                            .frame(width: 8, height: 8)
+                                        Text(String(format: "최근 %.1f", latest.value))
+                                            .font(.caption.bold())
+                                            .foregroundColor(homeMoodColor(latest.value))
+                                    }
+                                }
+                            }
+
+                            if homeMoodPoints.count < 2 {
+                                Text("일기를 2개 이상 작성하면 무드 그래프가 나타납니다")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .frame(height: 80)
+                            } else {
+                                EmotionLineChart(
+                                    dataPoints: homeMoodPoints,
+                                    color: .accentColor,
+                                    title: "무드",
+                                    showDots: true,
+                                    height: 120
+                                )
+                            }
+                        }
+                        .padding(16)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(14)
+                        .padding(.horizontal, 20)
+
+                        Divider().padding(.horizontal, 40)
+
+                        // Tag Dashboard Cloud
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("인기 키워드로 일기 찾기")
+                                .font(.subheadline.bold())
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal)
+
+                            FlowLayout(items: allKeywords) { tag in
+                                Button(action: {
+                                    selectedKeyword = tag
+                                }) {
+                                    Text("#\(tag)")
+                                        .font(.subheadline)
+                                        .foregroundColor(selectedKeyword == tag ? .white : .accentColor)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(selectedKeyword == tag ? Color.accentColor : Color.accentColor.opacity(0.1))
+                                        .cornerRadius(12)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal)
+                        }
+                        .frame(maxWidth: 450)
+
+                        Spacer(minLength: 20)
                     }
-                    .frame(maxWidth: 450)
-                    
-                    Spacer()
+                    .padding(.vertical, 20)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -299,6 +381,15 @@ struct HomeView: View {
         }
         .sheet(isPresented: $isShowingWriter) {
             NewDiaryView()
+        }
+        .sheet(item: Binding(get: {
+            selectedDetailImage.map { IdentifiableImage(image: $0) }
+        }, set: {
+            selectedDetailImage = $0?.image
+        })) { item in
+            ImageViewerModal(image: item.image) {
+                selectedDetailImage = nil
+            }
         }
         .onAppear {
             if selectedEntry == nil && !filteredEntries.isEmpty {
@@ -393,6 +484,24 @@ struct HomeView: View {
         )
     }
     
+    // Helper: Home mood data points (date-sorted all entries)
+    private var homeMoodPoints: [EmotionDataPoint] {
+        filteredEntries.sorted { $0.date < $1.date }.map { entry in
+            EmotionDataPoint(
+                date: entry.date,
+                value: entry.emotionScores.moodScore,
+                emoji: entry.moodEmoji,
+                label: entry.date.shortLabel()
+            )
+        }
+    }
+
+    private func homeMoodColor(_ score: Double) -> Color {
+        if score >= 7 { return .green }
+        if score >= 4 { return .yellow }
+        return .red
+    }
+
     // Gather all keywords present in database for the tag cloud
     private var allKeywords: [String] {
         let all = diaryStore.entries.flatMap { $0.keywords }
@@ -448,6 +557,18 @@ struct DiaryRow: View {
                     Text(shortDate(entry.date))
                         .font(.caption2)
                         .foregroundColor(isSelected ? .white.opacity(0.7) : .secondary)
+                    
+                    if !entry.images.isEmpty {
+                        HStack(spacing: 2) {
+                            Image(systemName: "photo.fill")
+                                .font(.system(size: 9))
+                            if entry.images.count > 1 {
+                                Text("\(entry.images.count)")
+                                    .font(.system(size: 9).bold())
+                            }
+                        }
+                        .foregroundColor(isSelected ? .white.opacity(0.85) : .accentColor)
+                    }
                     
                     Spacer()
                     

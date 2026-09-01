@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var authManager = BiometricAuthManager()
     @StateObject private var diaryStore = DiaryStore()
     @StateObject private var llmService = LLMService()
+    @StateObject private var ttsService = TTSService()
     
     var body: some View {
         Group {
@@ -27,6 +28,7 @@ struct ContentView: View {
         .environmentObject(authManager)
         .environmentObject(diaryStore)
         .environmentObject(llmService)
+        .environmentObject(ttsService)
     }
     
     @ViewBuilder
@@ -38,6 +40,12 @@ struct ContentView: View {
                     destination: HomeView(),
                     label: {
                         Label("일기장", systemImage: "book.closed.fill")
+                    }
+                )
+                NavigationLink(
+                    destination: EmotionAnalyticsView(),
+                    label: {
+                        Label("감정 분석", systemImage: "chart.line.uptrend.xyaxis")
                     }
                 )
                 NavigationLink(
@@ -53,7 +61,7 @@ struct ContentView: View {
             // Default center/detail view on startup
             HomeView()
         }
-        .frame(minWidth: 800, minHeight: 550)
+        .frame(minWidth: 900, minHeight: 580)
         #else
         TabView {
             NavigationView {
@@ -61,6 +69,13 @@ struct ContentView: View {
             }
             .tabItem {
                 Label("일기장", systemImage: "book.closed.fill")
+            }
+            
+            NavigationView {
+                EmotionAnalyticsView()
+            }
+            .tabItem {
+                Label("감정 분석", systemImage: "chart.line.uptrend.xyaxis")
             }
             
             NavigationView {

@@ -1,9 +1,12 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 struct NewDiaryView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var diaryStore: DiaryStore
     @EnvironmentObject var llmService: LLMService
+    @EnvironmentObject var ttsService: TTSService
     
     @StateObject private var speechRecognizer = SpeechRecognizer()
     
@@ -20,7 +23,12 @@ struct NewDiaryView: View {
     @State private var currentQuestion: String = ""
     @State private var liveDraft: String = ""
     @State private var showLiveDraftPreview = false
-    @State private var isAutoSendSpeech = true // Auto send on silence detection
+    // 상시 마이크 모드 (항상 켜짐)
+    
+    // Photo attachment variables
+    @State private var attachedImages: [NSImage] = []
+    @State private var selectedPreviewImage: NSImage? = nil
+    @State private var isTargetedForDrop: Bool = false
     
     // Real-Time Streaming Variables
     @State private var isStreaming = false
@@ -116,18 +124,56 @@ struct NewDiaryView: View {
             }
         }
         .frame(minWidth: 620, minHeight: 540)
+        .onDrop(of: [.image, .fileURL], isTargeted: $isTargetedForDrop) { providers in
+            handleDrop(providers: providers)
+        }
+        .overlay(
+            Group {
+                if isTargetedForDrop {
+                    ZStack {
+                        Color.black.opacity(0.4)
+                        VStack(spacing: 12) {
+                            Image(systemName: "photo.badge.plus")
+                                .font(.system(size: 48))
+                                .foregroundColor(.white)
+                            Text("사진을 여기에 놓아 일기에 추가하세요")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                        }
+                        .padding(32)
+                        .background(Color.accentColor.opacity(0.9))
+                        .cornerRadius(20)
+                        .shadow(radius: 10)
+                    }
+                    .transition(.opacity)
+                }
+            }
+        )
+        .sheet(item: Binding(get: {
+            selectedPreviewImage.map { IdentifiableImage(image: $0) }
+        }, set: {
+            selectedPreviewImage = $0?.image
+        })) { item in
+            ImageViewerModal(image: item.image) {
+                selectedPreviewImage = nil
+            }
+        }
         .onAppear {
+            setupSilenceAutoSend()
+            setupTTSCallbacks()
             if chatHistory.isEmpty {
                 startInitialConversation()
             }
-            setupSilenceAutoSend()
             // 상시 마이크 자동 시작
             speechRecognizer.autoRestart = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                speechRecognizer.startRecording()
+                if !ttsService.isSpeaking {
+                    speechRecognizer.startRecording()
+                }
             }
         }
         .onDisappear {
+            ttsService.stop()
             speechRecognizer.autoRestart = false
             speechRecognizer.stopRecording()
         }
@@ -147,7 +193,7 @@ struct NewDiaryView: View {
             }
         }
         .onReceive(speechRecognizer.$transcript) { text in
-            if speechRecognizer.isRecording && !text.isEmpty {
+            if speechRecognizer.isRecording && !text.isEmpty && !ttsService.isSpeaking && !speechRecognizer.isPausedForTTS {
                 self.chatInput = text
             }
         }
@@ -340,9 +386,26 @@ struct NewDiaryView: View {
                                 }
                                 
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("AI 비서 (\(llmService.selectedModelDisplayName))")
-                                        .font(.caption.bold())
-                                        .foregroundColor(.accentColor)
+                                    HStack {
+                                        Text("AI 비서 (\(llmService.selectedModelDisplayName))")
+                                            .font(.caption.bold())
+                                            .foregroundColor(.accentColor)
+                                        
+                                        Spacer()
+                                        
+                                        Button(action: {
+                                            ttsService.togglePlayback(for: currentQuestion)
+                                        }) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: ttsService.isSpeaking ? "speaker.wave.3.fill" : "speaker.wave.2")
+                                                    .font(.system(size: 13))
+                                                Text(ttsService.isSpeaking ? "음성 정지" : "다시 듣기")
+                                                    .font(.caption)
+                                            }
+                                            .foregroundColor(.accentColor)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
                                     
                                     Text(currentQuestion)
                                         .font(.body)
@@ -384,6 +447,22 @@ struct NewDiaryView: View {
                         Text("AI가 답변을 생성 중입니다...")
                             .font(.caption.bold())
                             .foregroundColor(.orange)
+                    } else if ttsService.isSpeaking {
+                        // AI 음성 낭독 중
+                        WaveformView(isRecording: false)
+                            .frame(height: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("🔊 AI가 목소리로 말씀 드리고 있습니다...")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.accentColor)
+                        }
+                        Spacer()
+                        Button("음성 정지") {
+                            ttsService.stop()
+                        }
+                        .font(.caption.bold())
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     } else if speechRecognizer.isRecording {
                         // 마이크 켜짐 - 말 인식 중
                         WaveformView(isRecording: true)
@@ -432,7 +511,36 @@ struct NewDiaryView: View {
                 .cornerRadius(8)
                 .padding(.horizontal)
                 
+                // Attached Photos in Chat View
+                if !attachedImages.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("첨부된 사진 (\(attachedImages.count)장)")
+                                .font(.caption.bold())
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                        .padding(.horizontal)
+                        
+                        photoThumbnailStrip
+                    }
+                    .padding(.bottom, 4)
+                }
+                
                 HStack(spacing: 10) {
+                    // Add Photo Button
+                    Button(action: {
+                        ImageFileManager.shared.pickImagesFromPanel { images in
+                            self.attachedImages.append(contentsOf: images)
+                        }
+                    }) {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.system(size: 20))
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("사진 추가하기 (또는 창으로 드래그 & 드롭)")
+                    
                     TextField("직접 입력도 가능합니다...", text: $chatInput)
                         .textFieldStyle(.plain)
                         .padding(10)
@@ -571,6 +679,60 @@ struct NewDiaryView: View {
                         .padding(.horizontal)
                 }
                 
+                // Attached Photos Preview & Management
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Image(systemName: "photo.stack.fill")
+                            .foregroundColor(.accentColor)
+                        Text("첨부된 사진 (\(attachedImages.count)장)")
+                            .font(.subheadline.bold())
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button(action: {
+                            ImageFileManager.shared.pickImagesFromPanel { images in
+                                self.attachedImages.append(contentsOf: images)
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus.circle.fill")
+                                Text("사진 추가")
+                            }
+                            .font(.caption.bold())
+                            .foregroundColor(.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal)
+                    
+                    if attachedImages.isEmpty {
+                        Button(action: {
+                            ImageFileManager.shared.pickImagesFromPanel { images in
+                                self.attachedImages.append(contentsOf: images)
+                            }
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "photo.badge.plus")
+                                    .font(.system(size: 20))
+                                Text("사진을 추가하여 일기를 더 풍성하게 남겨보세요 (클릭 또는 드래그 & 드롭)")
+                                    .font(.subheadline)
+                            }
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 22)
+                            .background(Color.secondary.opacity(0.04))
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .strokeBorder(Color.secondary.opacity(0.2), style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+                    } else {
+                        photoThumbnailStrip
+                    }
+                }
+                
                 // Final Synthesized Diary Content
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
@@ -605,12 +767,30 @@ struct NewDiaryView: View {
     
     private func setupSilenceAutoSend() {
         speechRecognizer.onSilenceDetected = { [self] recognizedText in
-            guard isAutoSendSpeech && !isStreaming else { return }
+            // 상시 마이크 모드 - 스트리밍 또는 TTS 낭독 중이 아닐 때 자동 전송
+            guard !isStreaming && !ttsService.isSpeaking else { return }
             let clean = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !clean.isEmpty && !isLoading {
                 DispatchQueue.main.async {
                     self.chatInput = clean
                     self.sendChatMessage()
+                }
+            }
+        }
+    }
+    
+    private func setupTTSCallbacks() {
+        ttsService.onSpeechStarted = {
+            DispatchQueue.main.async {
+                self.chatInput = ""
+                self.speechRecognizer.pauseForTTS()
+            }
+        }
+        ttsService.onSpeechFinished = {
+            DispatchQueue.main.async {
+                self.chatInput = ""
+                if !self.isStreaming {
+                    self.speechRecognizer.resumeFromTTS(delay: 0.6)
                 }
             }
         }
@@ -630,13 +810,21 @@ struct NewDiaryView: View {
     
     // Start Initial Conversation with AI greeting
     private func startInitialConversation() {
-        self.currentQuestion = llmService.getInitialQuestion()
+        let question = llmService.getInitialQuestion()
+        self.currentQuestion = question
+        if ttsService.autoReadAIResponse {
+            ttsService.speak(text: question)
+        }
     }
     
     // User submits chat response with Streaming
     private func sendChatMessage() {
         let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty && !isStreaming else { return }
+        
+        if ttsService.isSpeaking {
+            ttsService.stop()
+        }
         
         if speechRecognizer.isRecording {
             speechRecognizer.stopRecording()
@@ -679,7 +867,11 @@ struct NewDiaryView: View {
                         self.finalContent = response.finalDiaryContent ?? self.liveDraft
                         analyzeFinalDiary()
                     } else {
-                        self.currentQuestion = response.question ?? "오늘 이야기와 관련해서 더 말씀해주시고 싶은 부분이 있으신가요?"
+                        let nextQ = response.question ?? "오늘 이야기와 관련해서 더 말씀해주시고 싶은 부분이 있으신가요?"
+                        self.currentQuestion = nextQ
+                        if self.ttsService.autoReadAIResponse {
+                            self.ttsService.speak(text: nextQ)
+                        }
                     }
                 }
             } catch {
@@ -773,6 +965,13 @@ struct NewDiaryView: View {
     
     // Save to local store
     private func saveDiary() {
+        var savedImageFilenames: [String] = []
+        for img in attachedImages {
+            if let filename = ImageFileManager.shared.saveImage(img) {
+                savedImageFilenames.append(filename)
+            }
+        }
+        
         let entry = DiaryEntry(
             date: Date(),
             title: diaryTitle,
@@ -781,10 +980,143 @@ struct NewDiaryView: View {
             keywords: keywords,
             moodEmoji: moodEmoji,
             emotionScores: emotionScores,
-            chatHistory: chatHistory
+            chatHistory: chatHistory,
+            images: savedImageFilenames
         )
         diaryStore.add(entry)
         dismiss()
+    }
+    
+    // Drag & Drop Handler
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        for provider in providers {
+            if provider.canLoadObject(ofClass: NSImage.self) {
+                _ = provider.loadObject(ofClass: NSImage.self) { image, _ in
+                    if let image = image as? NSImage {
+                        DispatchQueue.main.async {
+                            self.attachedImages.append(image)
+                        }
+                    }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    if let data = item as? Data,
+                       let url = URL(dataRepresentation: data, relativeTo: nil),
+                       let image = NSImage(contentsOf: url) {
+                        DispatchQueue.main.async {
+                            self.attachedImages.append(image)
+                        }
+                    } else if let url = item as? URL,
+                              let image = NSImage(contentsOf: url) {
+                        DispatchQueue.main.async {
+                            self.attachedImages.append(image)
+                        }
+                    }
+                }
+            }
+        }
+        return true
+    }
+    
+    // Photo Thumbnails Strip
+    private var photoThumbnailStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(Array(attachedImages.enumerated()), id: \.offset) { index, img in
+                    ZStack(alignment: .topTrailing) {
+                        Image(nsImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 68, height: 68)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                            )
+                            .shadow(color: Color.black.opacity(0.08), radius: 3, x: 0, y: 1)
+                            .onTapGesture {
+                                selectedPreviewImage = img
+                            }
+                        
+                        Button(action: {
+                            withAnimation {
+                                _ = attachedImages.remove(at: index)
+                            }
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.white)
+                                .background(Circle().fill(Color.black.opacity(0.7)))
+                        }
+                        .buttonStyle(.plain)
+                        .offset(x: 4, y: -4)
+                        .help("사진 삭제")
+                    }
+                }
+                
+                Button(action: {
+                    ImageFileManager.shared.pickImagesFromPanel { images in
+                        self.attachedImages.append(contentsOf: images)
+                    }
+                }) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(.accentColor)
+                        Text("추가")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.accentColor)
+                    }
+                    .frame(width: 68, height: 68)
+                    .background(Color.accentColor.opacity(0.08))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(Color.accentColor.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [4]))
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("사진 추가하기")
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 4)
+        }
+    }
+}
+
+// Modal and helper models
+struct IdentifiableImage: Identifiable {
+    let id = UUID()
+    let image: NSImage
+}
+
+struct ImageViewerModal: View {
+    let image: NSImage
+    let onDismiss: () -> Void
+    
+    var body: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Text("사진 확대 보기")
+                    .font(.headline)
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding([.top, .horizontal])
+            
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 800, maxHeight: 600)
+                .cornerRadius(12)
+                .padding([.horizontal, .bottom])
+        }
+        .frame(minWidth: 460, minHeight: 360)
     }
 }
 
@@ -808,6 +1140,7 @@ struct WaveformView: View {
 struct ChatBubble: View {
     var message: ChatMessage
     var modelName: String
+    @EnvironmentObject var ttsService: TTSService
     
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -831,9 +1164,24 @@ struct ChatBubble: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("AI 비서 (\(modelName))")
-                        .font(.caption.bold())
-                        .foregroundColor(.accentColor)
+                    HStack {
+                        Text("AI 비서 (\(modelName))")
+                            .font(.caption.bold())
+                            .foregroundColor(.accentColor)
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            ttsService.togglePlayback(for: message.text)
+                        }) {
+                            Image(systemName: (ttsService.isSpeaking && ttsService.currentlySpeakingText == message.text) ? "speaker.slash.fill" : "speaker.wave.2")
+                                .font(.system(size: 12))
+                                .foregroundColor(ttsService.isSpeaking ? .accentColor : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("음성으로 다시 듣기")
+                    }
+                    
                     Text(message.text)
                         .font(.body)
                         .lineSpacing(4)

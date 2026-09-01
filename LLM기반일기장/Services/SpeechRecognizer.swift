@@ -15,6 +15,7 @@ class SpeechRecognizer: ObservableObject {
     @Published var permissionStatus: PermissionStatus = .undetermined
     @Published var errorMessage: String? = nil
     @Published var isSilenceDetected: Bool = false
+    @Published var isPausedForTTS: Bool = false
     
     var onSilenceDetected: ((String) -> Void)?
     var silenceThreshold: TimeInterval = 1.6 // Seconds of silence to trigger auto-send
@@ -73,6 +74,28 @@ class SpeechRecognizer: ObservableObject {
         }
     }
     
+    func pauseForTTS() {
+        DispatchQueue.main.async {
+            self.isPausedForTTS = true
+            self.transcript = ""
+            self.stopRecording()
+        }
+    }
+    
+    func resumeFromTTS(delay: TimeInterval = 0.6) {
+        DispatchQueue.main.async {
+            self.isPausedForTTS = false
+            self.transcript = ""
+            if self.autoRestart {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    if !self.isPausedForTTS && !self.isRecording {
+                        self.startRecording()
+                    }
+                }
+            }
+        }
+    }
+    
     func startRecording() {
         if speechRecognizer == nil {
             speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
@@ -83,7 +106,7 @@ class SpeechRecognizer: ObservableObject {
             return
         }
         
-        guard !isRecording else { return }
+        guard !isRecording && !isPausedForTTS else { return }
         
         // Invalidate silence timer
         silenceTimer?.invalidate()
@@ -126,7 +149,9 @@ class SpeechRecognizer: ObservableObject {
         
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            recognitionRequest.append(buffer)
+            if !self.isPausedForTTS {
+                recognitionRequest.append(buffer)
+            }
         }
         
         audioEngine.prepare()
@@ -142,13 +167,16 @@ class SpeechRecognizer: ObservableObject {
         isRecording = true
         
         recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { result, error in
+            guard !self.isPausedForTTS else { return }
             var isFinal = false
             
             if let result = result {
                 let text = result.bestTranscription.formattedString
                 DispatchQueue.main.async {
-                    self.transcript = text
-                    self.resetSilenceTimer()
+                    if !self.isPausedForTTS {
+                        self.transcript = text
+                        self.resetSilenceTimer()
+                    }
                 }
                 isFinal = result.isFinal
             }
@@ -165,20 +193,22 @@ class SpeechRecognizer: ObservableObject {
     private func resetSilenceTimer() {
         silenceTimer?.invalidate()
         let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty && isRecording else { return }
+        guard !text.isEmpty && isRecording && !isPausedForTTS else { return }
         
         silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { [weak self] _ in
-            guard let self = self, self.isRecording else { return }
+            guard let self = self, self.isRecording, !self.isPausedForTTS else { return }
             DispatchQueue.main.async {
                 self.isSilenceDetected = true
                 let finalText = self.transcript
                 self.stopRecording()
                 self.onSilenceDetected?(finalText)
                 // Auto-restart mic for always-on listening
-                if self.autoRestart {
+                if self.autoRestart && !self.isPausedForTTS {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         self.isSilenceDetected = false
-                        self.startRecording()
+                        if !self.isPausedForTTS {
+                            self.startRecording()
+                        }
                     }
                 }
             }

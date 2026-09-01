@@ -1,9 +1,11 @@
 import SwiftUI
+import AVFoundation
 
 struct SettingsView: View {
     @EnvironmentObject var diaryStore: DiaryStore
     @EnvironmentObject var llmService: LLMService
     @EnvironmentObject var authManager: BiometricAuthManager
+    @EnvironmentObject var ttsService: TTSService
     
     @State private var showClearConfirm = false
     @State private var isTestingConnection = false
@@ -165,7 +167,64 @@ struct SettingsView: View {
                 .padding(.top, 4)
             }
             
-            // MARK: - 2. 데이터 관리
+            // MARK: - 2. AI 음성 대화 (TTS - Text To Speech) 설정
+            Section(header: Text("🔊 AI 음성 대화 (TTS) 설정").font(.headline)) {
+                Toggle("AI 목소리 답변 (TTS) 사용", isOn: $ttsService.isTTSEnabled)
+                    .tint(.accentColor)
+                
+                if ttsService.isTTSEnabled {
+                    Toggle("AI 답변 생성 완료 시 자동 음성 읽기", isOn: $ttsService.autoReadAIResponse)
+                        .tint(.accentColor)
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("음성 속도")
+                                .font(.subheadline)
+                            Spacer()
+                            Text(String(format: "%.2fx", ttsService.ttsRate * 2.0))
+                                .font(.caption.bold())
+                                .foregroundColor(.accentColor)
+                        }
+                        Slider(value: $ttsService.ttsRate, in: 0.2...0.75, step: 0.05)
+                    }
+                    
+                    let voices = TTSService.getAvailableKoreanVoices()
+                    if !voices.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Picker("한국어 목소리 선택", selection: $ttsService.selectedVoiceIdentifier) {
+                                ForEach(voices, id: \.identifier) { voice in
+                                    Text("\(voice.name) (\(voice.qualityDescription))")
+                                        .tag(voice.identifier)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            
+                            Text("💡 안내: Siri 전용 음성은 Apple 보안 정책상 일반 개발자 앱 접근이 제한됩니다. 고품질/프리미엄 목소리를 사용하시려면 [시스템 설정 > 손쉬운 사용 > 말하기 콘텐츠 > 음성 > 한국어]에서 다운로드하세요.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineSpacing(2)
+                                .padding(.top, 2)
+                        }
+                    }
+                    
+                    Button(action: {
+                        if ttsService.isSpeaking {
+                            ttsService.stop()
+                        } else {
+                            ttsService.speak(text: "안녕하세요! 오늘 당신의 하루를 따뜻하게 들어드릴 AI 일기 비서입니다.")
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: ttsService.isSpeaking ? "stop.fill" : "speaker.wave.2.fill")
+                            Text(ttsService.isSpeaking ? "음성 테스트 정지" : "🔊 목소리 샘플 들어보기")
+                        }
+                        .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            
+            // MARK: - 3. 데이터 관리
             Section(header: Text("데이터 관리").font(.headline)) {
                 Button(action: {
                     diaryStore.loadMockDataIfEmpty()

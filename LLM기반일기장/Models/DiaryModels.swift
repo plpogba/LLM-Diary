@@ -10,10 +10,20 @@ struct EmotionScores: Codable, Equatable {
     var serenity: Double // 평온/신뢰 (0 to 10)
     var stress: Double   // 피로/스트레스 (0 to 10)
 
+    /// 6가지 감정을 종합한 단일 무드 지수 (0~10)
+    /// 긍정 감정(기쁨·평온)은 더하고 부정 감정(슬픔·분노·불안·스트레스)은 뺀 후 정규화
+    var moodScore: Double {
+        let positive = (joy * 2.0 + serenity * 2.0)
+        let negative = (sadness + anger + anxiety + stress)
+        let raw = (positive - negative + 20.0) / 4.0  // [-20..20] → [0..10]
+        return max(0, min(10, raw))
+    }
+
     static var empty: EmotionScores {
         EmotionScores(joy: 0, sadness: 0, anger: 0, anxiety: 0, serenity: 0, stress: 0)
     }
 }
+
 
 struct ChatMessage: Codable, Identifiable, Equatable {
     var id = UUID()
@@ -32,6 +42,47 @@ struct DiaryEntry: Codable, Identifiable, Equatable {
     var moodEmoji: String
     var emotionScores: EmotionScores
     var chatHistory: [ChatMessage]
+    var images: [String] = [] // 로컬 Documents/diary_images 폴더에 저장된 파일명 목록
+    
+    enum CodingKeys: String, CodingKey {
+        case id, date, title, content, voiceDraft, keywords, moodEmoji, emotionScores, chatHistory, images
+    }
+    
+    init(id: UUID = UUID(),
+         date: Date = Date(),
+         title: String,
+         content: String,
+         voiceDraft: String? = nil,
+         keywords: [String] = [],
+         moodEmoji: String = "😌",
+         emotionScores: EmotionScores = .empty,
+         chatHistory: [ChatMessage] = [],
+         images: [String] = []) {
+        self.id = id
+        self.date = date
+        self.title = title
+        self.content = content
+        self.voiceDraft = voiceDraft
+        self.keywords = keywords
+        self.moodEmoji = moodEmoji
+        self.emotionScores = emotionScores
+        self.chatHistory = chatHistory
+        self.images = images
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.date = try container.decode(Date.self, forKey: .date)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.content = try container.decode(String.self, forKey: .content)
+        self.voiceDraft = try container.decodeIfPresent(String.self, forKey: .voiceDraft)
+        self.keywords = try container.decodeIfPresent([String].self, forKey: .keywords) ?? []
+        self.moodEmoji = try container.decodeIfPresent(String.self, forKey: .moodEmoji) ?? "😌"
+        self.emotionScores = try container.decodeIfPresent(EmotionScores.self, forKey: .emotionScores) ?? .empty
+        self.chatHistory = try container.decodeIfPresent([ChatMessage].self, forKey: .chatHistory) ?? []
+        self.images = try container.decodeIfPresent([String].self, forKey: .images) ?? []
+    }
 }
 
 class DiaryStore: ObservableObject {
@@ -95,16 +146,25 @@ class DiaryStore: ObservableObject {
     }
     
     func delete(at offsets: IndexSet) {
+        for index in offsets {
+            if index < entries.count {
+                ImageFileManager.shared.deleteImages(filenames: entries[index].images)
+            }
+        }
         entries.remove(atOffsets: offsets)
         save()
     }
     
     func delete(_ entry: DiaryEntry) {
+        ImageFileManager.shared.deleteImages(filenames: entry.images)
         entries.removeAll(where: { $0.id == entry.id })
         save()
     }
     
     func clearAll() {
+        for entry in entries {
+            ImageFileManager.shared.deleteImages(filenames: entry.images)
+        }
         entries = []
         save()
     }
